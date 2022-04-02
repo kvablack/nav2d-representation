@@ -15,12 +15,12 @@ import torch
 import numpy as np
 
 import utils
-from models import SingleStep, SingleStepVAE, MultiStep
+from models import SingleStep, SingleStepVAE, Autoencoder
 
 np.set_printoptions(threshold=10000)
 import torch.nn.functional as F
 import random
-from nav2d import Navigate2D
+from nav2d.nav2d import Navigate2D
 
 
 def train(h, args):
@@ -48,9 +48,7 @@ def train(h, args):
     dataset.visit(lambda key: dataset_keys.append(key) if isinstance(dataset[key], h5py.Dataset) else None)
     env = Navigate2D(dataset.attrs)
 
-    ss_model = SingleStep(env.observation_space.shape, env.action_space.n, h["single_step"]).cuda()
-    # ss_model = torch.load("experiments/ss_pretrain/single_step.pt")
-    ms_model = MultiStep(env.observation_space.shape, ss_model.encoder, env, h["multi_step"]).cuda()
+    model = Autoencoder(env.observation_space.shape, env.action_space.n, h).cuda()
 
     global_step = 0
     for epoch in range(h["n_epochs"]):
@@ -61,44 +59,31 @@ def train(h, args):
             sample_ind = np.sort(sample_ind_all[start:end])
             samples = {key: dataset[key][sample_ind] for key in dataset_keys}
 
-            ss_losses = ss_model.train_step(samples)
-            tensorboard.add_scalars("ss", ss_losses, global_step)
-
-            ms_losses = ms_model.train_step(samples)
-            tensorboard.add_scalar("ms/loss", ms_losses["loss"], global_step)
-            # tensorboard.add_scalar("ms/mean_norm", ms_losses["mean_norm"], global_step)
-            # tensorboard.add_scalar("ms/mean_ang", ms_losses["mean_ang"], global_step)
+            losses, recon = model.train_step(samples)
+            tensorboard.add_scalars("auto", losses, global_step)
 
             if global_step > 0 and global_step % 1000 == 0:
-                ss_heatmaps = utils.perturb_heatmap(samples["obs"][-1], ss_model.encoder)
-                tensorboard.add_images("single_step", np.stack(ss_heatmaps), global_step)
+                obs = (samples["obs"][0] + 1) / 2
+                recon = (recon[0].cpu().numpy() + 1) / 2
+                obs[:, :, -1] = [[0], [1], [0]]
+                recon[:, :, 0] = [[0], [1], [0]]
+                tensorboard.add_images("auto", np.stack([obs, recon]), global_step)
 
-                ms_heatmaps = utils.perturb_heatmap(samples["obs"][-1], ms_model.encoder)
-                tensorboard.add_images("multi_step", np.stack(ms_heatmaps), global_step)
-
-                torch.save(ss_model, os.path.join(log_path, f"single_step_{global_step}.pt"))
-                torch.save(ms_model, os.path.join(log_path, f"multi_step_{global_step}.pt"))
+                torch.save(model, os.path.join(log_path, "model.pt"))
 
             global_step += 1
+
+    torch.save(model, os.path.join(log_path, "model.pt"))
 
 
 if __name__ == "__main__":
     HYPERPARAMETERS = {
-        "single_step": {
-            "forward_model_weight": 0.8,
-            "learning_rate": 0.001,
-            # "latent_dim": 32,
-            # "weight_decay": 0.0,
-        },
-        "multi_step": {
-            "tau": 0.005,
-            "sync_freq": 1,
-            "gamma": 0.99,
-            "learning_rate": 0.0001,
-        },
         "batch_size": 128,
         "seed": 1,
         "n_epochs": 40,
+        "learning_rate": 0.0004,
+        "latent_dim": 256,
+        "beta": 0.1,
     }
 
     parser = ArgumentParser()

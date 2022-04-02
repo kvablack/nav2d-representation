@@ -20,7 +20,7 @@ from models import SingleStep, SingleStepVAE, MultiStep, BehavioralCloning
 np.set_printoptions(threshold=10000)
 import torch.nn.functional as F
 import random
-from nav2d import Navigate2D
+from nav2d.nav2d import Navigate2D
 
 
 def train(h, args):

@@ -2,14 +2,29 @@ import torch
 import numpy as np
 import torch.nn.functional as F
 from collections import deque
-import nets
+from nav2d_representation import nets
 import random
 import tqdm
 from copy import deepcopy
 
 
 class DQN_HER:
-    def __init__(self, env, encoder, h, dqn=None):
+    def __init__(
+        self,
+        env,
+        encoder,
+        dqn=None,
+        gamma=0.99,
+        use_ddqn=True,
+        tau=0.005,
+        learning_rate=0.001,
+        batch_size=16,
+        epsilon_high=0.9,
+        epsilon_low=0.2,
+        epsilon_decay=10000,
+        updates_per_step=1,
+        replay_buffer_size=1000000,
+    ):
         self.env = env
 
         if dqn is None:
@@ -17,21 +32,24 @@ class DQN_HER:
 
         self.model = torch.nn.Sequential(
             encoder,
+            # nets.SideTuner(encoder, env.observation_space.shape),
             dqn,
         ).cuda()
         self.target_model = deepcopy(self.model).cuda()
-        self.gamma = h["gamma"]
-        self.ddqn = h["use_ddqn"]
-        self.tau = h["tau"]
+        self.gamma = gamma
+        self.ddqn = use_ddqn
+        self.tau = tau
         self.optimizer = torch.optim.Adam(
-            list(self.model.parameters()), lr=h["learning_rate"]
+            list(self.model.parameters()),
+            lr=learning_rate,
         )
-        self.batch_size = h["batch_size"]
-        self.epsilon_high = h["epsilon_high"]
-        self.epsilon_low = h["epsilon_low"]
-        self.epsilon_decay = h["epsilon_decay"]
+        self.batch_size = batch_size
+        self.epsilon_high = epsilon_high
+        self.epsilon_low = epsilon_low
+        self.epsilon_decay = epsilon_decay
+        self.updates_per_step = updates_per_step
 
-        self.replay_buffer = deque(maxlen=h["replay_buffer_size"])
+        self.replay_buffer = deque(maxlen=replay_buffer_size)
         self.steps = 0
         self.epsilon = self.epsilon_high
 
@@ -54,9 +72,7 @@ class DQN_HER:
             else:
                 with torch.no_grad():
                     Q = self.model(
-                        torch.tensor(
-                            obs, dtype=torch.float, device="cuda"
-                        ).unsqueeze(0)
+                        torch.tensor(obs, dtype=torch.float, device="cuda").unsqueeze(0)
                     ).squeeze(0)
                     action = torch.argmax(Q).item()
             obs_next, reward, done, info = self.env.step(action)
@@ -64,13 +80,14 @@ class DQN_HER:
             min_dist = min(min_dist, self.env.dist)
 
             self.replay_buffer.append([obs, action, reward, obs_next])
-            loss = self.update_model()
-            self.sync_params()
-            total_loss += loss
+            for _ in range(self.updates_per_step):
+                loss = self.update_model()
+                self.sync_params()
+                total_loss += loss
             obs = obs_next
 
         self.replay_buffer.extend(self.env.her())
-        avg_loss = total_loss / t
+        avg_loss = total_loss / t / self.updates_per_step
         return total_reward, avg_loss, min_dist, t
 
     def update_model(self):
@@ -82,9 +99,7 @@ class DQN_HER:
         states = torch.tensor(states, dtype=torch.float, device="cuda")
         actions = torch.tensor(actions, dtype=torch.long, device="cuda")
         rewards = torch.tensor(rewards, dtype=torch.float, device="cuda")
-        new_states = torch.tensor(
-            new_states, dtype=torch.float, device="cuda"
-        )
+        new_states = torch.tensor(new_states, dtype=torch.float, device="cuda")
 
         if self.ddqn:
             model_next_acts = self.model(new_states).detach().max(dim=1)[1]
